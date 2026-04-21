@@ -47,6 +47,13 @@ Prerequisites:
 | `melotune_queue` | Show the next few tracks MeloTune has queued for your current vibe |
 | `melotune_play` | Play / resume |
 | `melotune_skip` | Skip to the next track |
+| `melotune_favorite` | Star the current track (or a specific track by id) |
+| `melotune_unfavorite` | Remove favorite from the current (or specific) track |
+| `melotune_artist_info` | Bio, genres, top tracks, similar artists |
+| `melotune_listening_history` | Recent tracks, top artists of the week, top moods |
+| `melotune_search` | Search your MeloTune library and recommendations |
+
+You can call these as tools or just chat — "who's the artist on this one?", "show me something calmer", "what have I played most this week?" — Claude Code picks the tool and surfaces the answer in the console.
 
 ## Environment
 
@@ -66,15 +73,23 @@ This plugin emits and expects typed CMBs. Any MeloTune iOS build that implements
 - `melotune:queue`
 - `melotune:play`
 - `melotune:skip`
+- `melotune:favorite` (optional metadata `{ trackId }`)
+- `melotune:unfavorite` (optional metadata `{ trackId }`)
+- `melotune:artist-info` (optional metadata `{ artistName }`)
+- `melotune:history` (metadata `{ limit }`)
+- `melotune:search` (metadata `{ query }`)
 
-**Responses expected (focus field):**
+**Responses expected (focus field = request + `:response`):**
 
-- `melotune:now-playing:response` — payload `{ title, artist, mood, durationSec, positionSec }`
-- `melotune:queue:response` — payload `{ tracks: [{ title, artist, mood, durationSec }, ...] }`
-- `melotune:play:response` — payload `{ ok: bool, detail?: string }`
-- `melotune:skip:response` — payload `{ ok: bool, detail?: string }`
+- `now-playing` → `{ title, artist, mood, durationSec, positionSec }`
+- `queue` → `{ tracks: [{ title, artist, mood, durationSec }, ...] }`
+- `play` / `skip` → `{ ok: bool, detail?: string }`
+- `favorite` / `unfavorite` → `{ ok: bool, title, artist, favorite: bool }`
+- `artist-info` → `{ name, bio?, genres: [], topTracks: [{ title }], similarArtists: [{ name }] }`
+- `history` → `{ tracks: [{ title, artist, mood, playedAt }], topArtists: [{ name, plays }], topMoods: [{ mood }] }`
+- `search` → `{ results: [{ title, artist, mood }] }`
 
-Payload can be in the CMB `content` field (JSON-encoded) or `metadata` field (object).
+Payload may be in the CMB `content` field (JSON-encoded string) or `metadata` field (object).
 
 Peer discovery: plugin matches any mesh peer whose `name` starts with `melotune` (case-insensitive).
 

@@ -12,15 +12,20 @@
  *
  * CMB contract (implemented by MeloTune iOS for this plugin to work):
  *   Requests from plugin:
- *     focus = "melotune:now-playing" | "melotune:queue" | "melotune:play" | "melotune:skip"
+ *     focus = "melotune:now-playing"    | "melotune:queue"          | "melotune:play"
+ *           | "melotune:skip"           | "melotune:favorite"       | "melotune:unfavorite"
+ *           | "melotune:artist-info"    | "melotune:history"        | "melotune:search"
  *     intent = short human description of the ask
  *     motivation = session-context (file being edited, vibe tag) if useful
- *   Responses expected:
- *     focus = "melotune:now-playing:response" | "melotune:queue:response" | etc
- *     content / metadata carries a JSON payload:
- *       now-playing:  { title, artist, mood, durationSec, positionSec }
- *       queue:        { tracks: [{ title, artist, mood, durationSec }, ...] }
- *       play / skip:  { ok: bool, detail?: string }
+ *     metadata = request parameters as an object (trackId, artistName, query, limit, etc.)
+ *   Responses expected (focus = "<same>:response"):
+ *     now-playing:   { title, artist, mood, durationSec, positionSec }
+ *     queue:         { tracks: [{ title, artist, mood, durationSec }, ...] }
+ *     play / skip:   { ok: bool, detail?: string }
+ *     favorite/unfavorite: { ok: bool, title, artist, favorite: bool }
+ *     artist-info:   { name, bio?, genres: [], topTracks: [], similarArtists: [] }
+ *     history:       { tracks: [{ title, artist, playedAt, mood }], topArtists: [], topMoods: [] }
+ *     search:        { results: [{ title, artist, mood }] }
  *
  * Copyright (c) 2026 SYM.BOT. Apache 2.0 License.
  */
@@ -183,11 +188,67 @@ async function main() {
           'Skip to the next track on MeloTune. The current track is ended and the next track in the queue begins playing.',
         inputSchema: { type: 'object', properties: {}, additionalProperties: false },
       },
+      {
+        name: 'melotune_favorite',
+        description:
+          'Mark the currently playing track (or a specific track by id) as a favorite on MeloTune.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            trackId: { type: 'string', description: 'Optional track id; defaults to currently playing.' },
+          },
+          additionalProperties: false,
+        },
+      },
+      {
+        name: 'melotune_unfavorite',
+        description: 'Remove favorite mark from the currently playing track (or a specific track by id).',
+        inputSchema: {
+          type: 'object',
+          properties: { trackId: { type: 'string' } },
+          additionalProperties: false,
+        },
+      },
+      {
+        name: 'melotune_artist_info',
+        description:
+          "Get details about an artist — biography, genres, top tracks, similar artists. If artistName is omitted, uses the currently playing track's artist.",
+        inputSchema: {
+          type: 'object',
+          properties: { artistName: { type: 'string', description: 'Artist name to look up; defaults to current.' } },
+          additionalProperties: false,
+        },
+      },
+      {
+        name: 'melotune_listening_history',
+        description:
+          'Show recent listening history from MeloTune — recent tracks, top artists this week, top moods. Use this when the user asks questions like "what have I been listening to" or "who are my most played artists".',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            limit: { type: 'integer', minimum: 1, maximum: 100, description: 'Max recent tracks to return (default 20).' },
+          },
+          additionalProperties: false,
+        },
+      },
+      {
+        name: 'melotune_search',
+        description:
+          "Search the user's MeloTune library and recommendations. Use this to find a specific track, artist, or vibe the user mentions conversationally.",
+        inputSchema: {
+          type: 'object',
+          properties: {
+            query: { type: 'string', description: 'Free-text search query.' },
+          },
+          required: ['query'],
+          additionalProperties: false,
+        },
+      },
     ],
   }));
 
   server.setRequestHandler(CallToolRequestSchema, async (req) => {
-    const { name } = req.params;
+    const { name, arguments: args = {} } = req.params;
     switch (name) {
       case 'melotune_now_playing': {
         const r = await requestFromMeloTune(node, 'melotune:now-playing', {
@@ -218,6 +279,103 @@ async function main() {
         if (!r.ok) return { content: [{ type: 'text', text: r.reason }] };
         const p = parseResponsePayload(r.cmb);
         return { content: [{ type: 'text', text: p.ok ? '⏭  Skipped to next track.' : `Skip failed: ${p.detail || 'unknown'}` }] };
+      }
+      case 'melotune_favorite': {
+        const r = await requestFromMeloTune(node, 'melotune:favorite', {
+          intent: 'mark track as favorite',
+          metadata: args.trackId ? { trackId: args.trackId } : undefined,
+        });
+        if (!r.ok) return { content: [{ type: 'text', text: r.reason }] };
+        const p = parseResponsePayload(r.cmb);
+        return {
+          content: [
+            {
+              type: 'text',
+              text: p.ok
+                ? `★ Favorited: ${p.title || 'track'}${p.artist ? ` — ${p.artist}` : ''}`
+                : `Favorite failed: ${p.detail || 'unknown'}`,
+            },
+          ],
+        };
+      }
+      case 'melotune_unfavorite': {
+        const r = await requestFromMeloTune(node, 'melotune:unfavorite', {
+          intent: 'remove favorite mark',
+          metadata: args.trackId ? { trackId: args.trackId } : undefined,
+        });
+        if (!r.ok) return { content: [{ type: 'text', text: r.reason }] };
+        const p = parseResponsePayload(r.cmb);
+        return {
+          content: [
+            {
+              type: 'text',
+              text: p.ok
+                ? `☆ Unfavorited: ${p.title || 'track'}${p.artist ? ` — ${p.artist}` : ''}`
+                : `Unfavorite failed: ${p.detail || 'unknown'}`,
+            },
+          ],
+        };
+      }
+      case 'melotune_artist_info': {
+        const r = await requestFromMeloTune(node, 'melotune:artist-info', {
+          intent: 'fetch artist details',
+          metadata: args.artistName ? { artistName: args.artistName } : undefined,
+        });
+        if (!r.ok) return { content: [{ type: 'text', text: r.reason }] };
+        const p = parseResponsePayload(r.cmb);
+        if (!p.name) return { content: [{ type: 'text', text: 'No artist info available.' }] };
+        const lines = [`🎤  ${p.name}`];
+        if (p.bio) lines.push('', p.bio);
+        if (Array.isArray(p.genres) && p.genres.length) lines.push('', `Genres: ${p.genres.join(', ')}`);
+        if (Array.isArray(p.topTracks) && p.topTracks.length) {
+          lines.push('', 'Top tracks:');
+          p.topTracks.slice(0, 5).forEach((t) => lines.push(`  • ${t.title || t}`));
+        }
+        if (Array.isArray(p.similarArtists) && p.similarArtists.length) {
+          lines.push('', `Similar: ${p.similarArtists.slice(0, 5).map((a) => a.name || a).join(', ')}`);
+        }
+        return { content: [{ type: 'text', text: lines.join('\n') }] };
+      }
+      case 'melotune_listening_history': {
+        const r = await requestFromMeloTune(node, 'melotune:history', {
+          intent: 'fetch recent listening history',
+          metadata: { limit: args.limit ?? 20 },
+        });
+        if (!r.ok) return { content: [{ type: 'text', text: r.reason }] };
+        const p = parseResponsePayload(r.cmb);
+        const lines = [];
+        if (Array.isArray(p.topArtists) && p.topArtists.length) {
+          lines.push('Top artists:');
+          p.topArtists.slice(0, 5).forEach((a) => lines.push(`  • ${a.name || a}${a.plays ? ` (${a.plays})` : ''}`));
+          lines.push('');
+        }
+        if (Array.isArray(p.topMoods) && p.topMoods.length) {
+          lines.push(`Top moods: ${p.topMoods.slice(0, 5).map((m) => m.mood || m).join(', ')}`);
+          lines.push('');
+        }
+        if (Array.isArray(p.tracks) && p.tracks.length) {
+          lines.push('Recent:');
+          p.tracks.slice(0, 15).forEach((t) => {
+            const when = t.playedAt ? new Date(t.playedAt).toLocaleString() : '';
+            lines.push(`  • ${t.title} — ${t.artist || 'Unknown'}${t.mood ? ` · ${t.mood}` : ''}${when ? ` · ${when}` : ''}`);
+          });
+        }
+        return { content: [{ type: 'text', text: lines.length ? lines.join('\n') : 'No listening history available.' }] };
+      }
+      case 'melotune_search': {
+        const query = String(args.query || '').trim();
+        if (!query) return { content: [{ type: 'text', text: 'Search query is required.' }] };
+        const r = await requestFromMeloTune(node, 'melotune:search', {
+          intent: `search library for "${query}"`,
+          metadata: { query },
+        });
+        if (!r.ok) return { content: [{ type: 'text', text: r.reason }] };
+        const p = parseResponsePayload(r.cmb);
+        const results = Array.isArray(p.results) ? p.results : [];
+        if (!results.length) return { content: [{ type: 'text', text: `No results for "${query}".` }] };
+        const lines = [`Results for "${query}":`];
+        results.slice(0, 10).forEach((t, i) => lines.push(`  ${i + 1}. ${t.title} — ${t.artist || 'Unknown'}${t.mood ? ` · ${t.mood}` : ''}`));
+        return { content: [{ type: 'text', text: lines.join('\n') }] };
       }
       default:
         return { content: [{ type: 'text', text: `Unknown tool: ${name}` }] };

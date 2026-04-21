@@ -1,0 +1,22 @@
+{
+  "name": "melotune",
+  "version": "0.1.0",
+  "description": "Claude Code console as a MeloTune music interface. View the upcoming queue, see current track, play, skip — while you vibe-code.",
+  "author": {
+    "name": "Hongwei Xu",
+    "email": "hongwei@sym.bot",
+    "url": "https://sym.bot"
+  },
+  "homepage": "https://sym.bot",
+  "repository": "https://github.com/sym-bot/melotune-plugin",
+  "license": "Apache-2.0",
+  "keywords": [
+    "music",
+    "melotune",
+    "mesh",
+    "mcp",
+    "mmp",
+    "svaf",
+    "vibe-coding"
+  ]
+}

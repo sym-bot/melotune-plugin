@@ -1,0 +1,45 @@
+{
+  "name": "@sym-bot/melotune-plugin",
+  "version": "0.1.0",
+  "description": "Claude Code plugin — turn the Claude Code console into a MeloTune music interface. View the upcoming queue, see current track, play, skip.",
+  "main": "server.js",
+  "bin": {
+    "melotune-plugin": "server.js"
+  },
+  "scripts": {
+    "test": "node test/server.test.js"
+  },
+  "files": [
+    "server.js",
+    "bin/",
+    ".claude-plugin/",
+    ".mcp.json",
+    "README.md",
+    "LICENSE"
+  ],
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.12.1",
+    "@sym-bot/sym": "^0.4.1"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "keywords": [
+    "claude-code",
+    "claude-plugin",
+    "melotune",
+    "music",
+    "mesh-cognition",
+    "sym",
+    "mmp",
+    "cat7",
+    "vibe-coding"
+  ],
+  "author": "Hongwei Xu <hongwei@sym.bot> (https://sym.bot)",
+  "license": "Apache-2.0",
+  "homepage": "https://sym.bot",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/sym-bot/melotune-plugin"
+  }
+}

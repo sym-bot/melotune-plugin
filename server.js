@@ -98,33 +98,45 @@ async function requestFromMeloTune(node, focusTag, extraFields = {}) {
 
   return new Promise((resolve) => {
     let settled = false;
-    const onCmb = (evt) => {
+    // Incoming CMBs fire 'cmb-accepted' on SymNode (after SVAF accepts),
+    // NOT 'cmb'. Payload shape from MemoryStore.receiveFromPeer:
+    //   { key, cmb: { fields: { focus: { text: "..." }, commitment: { text: "..." }, ... } }, ... }
+    // Fields are objects with a `.text` property (plus optional valence/arousal on mood).
+    const readFieldText = (field) => {
+      if (!field) return '';
+      if (typeof field === 'string') return field;
+      if (typeof field.text === 'string') return field.text;
+      return '';
+    };
+    const onCmbAccepted = (stored) => {
       if (settled) return;
-      const cmb = evt?.cmb;
-      const focus = cmb?.fields?.focus || evt?.focus || '';
+      const fields = stored?.cmb?.fields || {};
+      const focus = readFieldText(fields.focus);
       if (focus === `${focusTag}:response`) {
         settled = true;
         cleanup();
-        resolve({ ok: true, cmb });
+        resolve({ ok: true, cmb: stored.cmb, _plainFields: fields });
       }
     };
     const cleanup = () => {
-      if (typeof node.off === 'function') node.off('cmb', onCmb);
-      else if (typeof node.removeListener === 'function') node.removeListener('cmb', onCmb);
+      if (typeof node.off === 'function') node.off('cmb-accepted', onCmbAccepted);
+      else if (typeof node.removeListener === 'function') node.removeListener('cmb-accepted', onCmbAccepted);
     };
-    if (typeof node.on === 'function') node.on('cmb', onCmb);
+    if (typeof node.on === 'function') node.on('cmb-accepted', onCmbAccepted);
 
-    // Emit the request
+    // Emit the request — targeted send needs full peerId, NOT peer.name
+    // (per MMP §4.4.4 and node.js line 586: opts.to = "full peerId of a
+    // single target peer"). Passing name instead of peerId causes
+    // this._peers.get() to miss, the send is silently stored-locally-only,
+    // and the iOS peer never receives the request.
     const fields = { focus: focusTag, ...extraFields };
     try {
       if (typeof node.remember === 'function') {
-        node.remember(fields, { to: melotunePeer.name });
-      } else if (typeof node.send === 'function') {
-        node.send({ fields, to: melotunePeer.name });
+        node.remember(fields, { to: melotunePeer.peerId });
       } else {
         settled = true;
         cleanup();
-        return resolve({ ok: false, reason: 'SymNode send method unavailable' });
+        return resolve({ ok: false, reason: 'SymNode.remember unavailable' });
       }
     } catch (err) {
       settled = true;
@@ -146,13 +158,25 @@ async function requestFromMeloTune(node, focusTag, extraFields = {}) {
 }
 
 function parseResponsePayload(cmb) {
-  const content = cmb?.fields?.content ?? cmb?.content ?? cmb?.fields?.metadata;
-  if (!content) return {};
-  if (typeof content === 'object') return content;
+  // iOS handler puts the JSON payload in the `commitment` CAT7 field
+  // (see SymMeshService.swift handleMeloTunePluginRequest). Fields on
+  // the wire decode to `{ text: "..." }` objects in the JS SDK.
+  const fields = cmb?.fields || {};
+  const readFieldText = (field) => {
+    if (!field) return '';
+    if (typeof field === 'string') return field;
+    if (typeof field.text === 'string') return field.text;
+    return '';
+  };
+  const raw =
+    readFieldText(fields.commitment) ||
+    readFieldText(fields.content) ||
+    readFieldText(fields.metadata);
+  if (!raw) return {};
   try {
-    return JSON.parse(content);
+    return JSON.parse(raw);
   } catch {
-    return { raw: String(content) };
+    return { raw };
   }
 }
 

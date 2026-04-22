@@ -60,6 +60,8 @@ You can call these as tools or just chat — "who's the artist on this one?", "s
 | Variable | Default | Purpose |
 |---|---|---|
 | `MELOTUNE_PLUGIN_NODE_NAME` | `melotune-plugin-<pid>` | Mesh node identity for this plugin instance |
+| `MELOTUNE_SERVICE_TYPE` | `_melotune._tcp` | Bonjour service type — must match MeloTune iOS's `discoveryServiceType` |
+| `MELOTUNE_GROUP` | `default` | MMP §5.8 mesh group — must match MeloTune iOS |
 | `SYM_RELAY_URL` | (unset → LAN-only via Bonjour) | WebSocket URL of a SYM relay for cross-network mesh |
 | `SYM_RELAY_TOKEN` | (unset) | Relay auth token |
 

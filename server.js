@@ -39,6 +39,12 @@ const {
 const { SymNode } = require('@sym-bot/sym');
 
 const NODE_NAME = process.env.MELOTUNE_PLUGIN_NODE_NAME || `melotune-plugin-${process.pid}`;
+// MeloTune iOS publishes on Bonjour service type `_melotune._tcp` (see
+// sym-bot/melotune-ios SymMeshService). We must match on the same service
+// type for LAN discovery to work. MMP §5.8 group stays at `default` (same
+// as MeloTune iOS).
+const DISCOVERY_SERVICE_TYPE = process.env.MELOTUNE_SERVICE_TYPE || '_melotune._tcp';
+const MESH_GROUP = process.env.MELOTUNE_GROUP || 'default';
 const PEER_PATTERN = /^melotune/i; // match any peer whose name starts with "melotune"
 const REQUEST_TIMEOUT_MS = 5000;
 
@@ -152,6 +158,8 @@ function formatQueue(p) {
 async function main() {
   const node = new SymNode({
     name: NODE_NAME,
+    discoveryServiceType: DISCOVERY_SERVICE_TYPE,
+    group: MESH_GROUP,
     relayUrl: process.env.SYM_RELAY_URL || undefined,
     relayToken: process.env.SYM_RELAY_TOKEN || undefined,
   });

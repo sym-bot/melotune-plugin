@@ -124,21 +124,22 @@ async function requestFromMeloTune(node, focusTag, extraFields = {}) {
     };
     if (typeof node.on === 'function') node.on('cmb-accepted', onCmbAccepted);
 
-    // Emit the request — targeted send needs full peerId, NOT peer.name
-    // (per MMP §4.4.4 and node.js line 586: opts.to = "full peerId of a
-    // single target peer"). Passing name instead of peerId causes
-    // this._peers.get() to miss, the send is silently stored-locally-only,
-    // and the iOS peer never receives the request.
+    // Broadcast the request (no `to:`). Broadcast is simpler and sidesteps
+    // a subtle peerId-lookup race in targeted send. The iOS handler filters
+    // on `focus.hasPrefix("melotune:")` so only MeloTune peers act on it.
     const fields = { focus: focusTag, ...extraFields };
+    const stderrLog = (msg) => { try { process.stderr.write(`[melotune-plugin] ${msg}\n`); } catch {} };
     try {
-      if (typeof node.remember === 'function') {
-        node.remember(fields, { to: melotunePeer.peerId });
-      } else {
+      if (typeof node.remember !== 'function') {
         settled = true;
         cleanup();
         return resolve({ ok: false, reason: 'SymNode.remember unavailable' });
       }
+      stderrLog(`sending request focus=${focusTag} target=${melotunePeer.name} peerId=${melotunePeer.peerId?.slice(0, 8) || 'unknown'} peerCount=${peers.length}`);
+      const stored = node.remember(fields);
+      stderrLog(`remember returned: ${stored ? 'stored-entry:' + (stored.key || 'no-key').slice(0, 8) : 'null'}`);
     } catch (err) {
+      stderrLog(`send threw: ${err.message}`);
       settled = true;
       cleanup();
       return resolve({ ok: false, reason: `send failed: ${err.message}` });

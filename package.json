@@ -1,6 +1,6 @@
 {
   "name": "@sym-bot/melotune-plugin",
-  "version": "0.1.5",
+  "version": "0.1.6",
   "description": "Claude Code plugin — turn the Claude Code console into a MeloTune music interface. View the upcoming queue, see current track, play, skip.",
   "main": "server.js",
   "bin": {

@@ -216,7 +216,7 @@ async function main() {
   if (typeof node.start === 'function') await node.start();
 
   const server = new Server(
-    { name: 'melotune-plugin', version: '0.1.5' },
+    { name: 'melotune-plugin', version: '0.1.6' },
     { capabilities: { tools: {} } }
   );
 
@@ -286,6 +286,23 @@ async function main() {
           properties: {
             limit: { type: 'integer', minimum: 1, maximum: 100, description: 'Max recent tracks to return (default 20).' },
           },
+          additionalProperties: false,
+        },
+      },
+      {
+        name: 'melotune_request',
+        description:
+          "Ask MeloTune to curate music matching a free-text vibe, mood, activity, or context (e.g. \"late night coding\", \"something calmer\", \"90s hip hop throwback\", \"focus lo-fi\"). Use this whenever the user describes WHAT they want to hear or HOW they want to feel, rather than asking for a specific existing track. MeloTune parses the prompt (artist/track/genre/mood/activity) and begins curating a new playlist — the current track ends and the new queue takes over.",
+        inputSchema: {
+          type: 'object',
+          properties: {
+            request: {
+              type: 'string',
+              description:
+                'Natural-language description of the music or vibe the user wants. Pass the user\'s phrasing through as-is when it\'s already a good description; otherwise add the session context (e.g. "late night coding, focus, minimal distractions").',
+            },
+          },
+          required: ['request'],
           additionalProperties: false,
         },
       },
@@ -419,6 +436,23 @@ async function main() {
           });
         }
         return { content: [{ type: 'text', text: lines.length ? lines.join('\n') : 'No listening history available.' }] };
+      }
+      case 'melotune_request': {
+        const text = String(args.request || '').trim();
+        if (!text) return { content: [{ type: 'text', text: 'Describe the music or vibe you want.' }] };
+        const r = await requestFromMeloTune(node, 'melotune:text-prompt', {
+          intent: `curate music matching: ${text}`,
+          metadata: { text },
+        });
+        if (!r.ok) return { content: [{ type: 'text', text: r.reason }] };
+        const p = r.payload;
+        if (!p.ok) {
+          return { content: [{ type: 'text', text: `MeloTune couldn't parse that: ${p.detail || 'unknown error'}` }] };
+        }
+        const explanation = p.explanation ? `\n${p.explanation}` : '';
+        return {
+          content: [{ type: 'text', text: `🎧  Curating: "${text}"${explanation}\n\nUse melotune_queue to see what's coming up.` }],
+        };
       }
       case 'melotune_search': {
         const query = String(args.query || '').trim();

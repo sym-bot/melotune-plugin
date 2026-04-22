@@ -57,12 +57,23 @@ async function requestFromMeloTune(node, focusTag, extraFields = {}) {
   // Peer discovery can race the first user request — the SymNode has
   // started Bonjour browsing but the MeloTune iOS peer may not yet be
   // in _peers. Retry briefly before giving up.
+  //
+  // Since we already filter at the Bonjour layer via
+  // discoveryServiceType = _melotune._tcp, every peer in node.peers()
+  // is by definition a MeloTune-family peer — the user's phone might
+  // publish with a custom display name (e.g., "Hongwei") rather than
+  // the default "melotune", so we match by "not-self" instead of a
+  // name prefix.
   const getMelotunePeer = () => {
     const peers = (typeof node.peers === 'function') ? node.peers() : [];
-    return {
-      peers,
-      melotunePeer: peers.find((p) => PEER_PATTERN.test(p.name || '') && !/plugin/i.test(p.name || '')),
-    };
+    const melotunePeer = peers.find((p) => {
+      const n = p.name || '';
+      if (!n) return false;
+      if (n === NODE_NAME) return false;          // us
+      if (/^melotune-plugin/i.test(n)) return false; // another plugin instance
+      return true; // anything else on _melotune._tcp is a MeloTune iOS peer
+    });
+    return { peers, melotunePeer };
   };
   let { peers, melotunePeer } = getMelotunePeer();
   if (!melotunePeer) {

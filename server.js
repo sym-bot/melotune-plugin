@@ -216,8 +216,15 @@ async function main() {
   if (typeof node.start === 'function') await node.start();
 
   const server = new Server(
-    { name: 'melotune-plugin', version: '0.1.6' },
-    { capabilities: { tools: {} } }
+    { name: 'melotune-plugin', version: '0.1.7' },
+    {
+      capabilities: { tools: {} },
+      instructions:
+        'You are the melotune-plugin agent on the SYM mesh. MeloTune runs ' +
+        'on the iPhone; this plugin is a mesh peer that lets the Claude Code ' +
+        'console view the queue, play, skip, favourite, and curate music via ' +
+        'free-text prompts. Call the tools to act on MeloTune.',
+    }
   );
 
   server.setRequestHandler(ListToolsRequestSchema, async () => ({
@@ -473,6 +480,20 @@ async function main() {
         return { content: [{ type: 'text', text: `Unknown tool: ${name}` }] };
     }
   });
+
+  // Final startup step: reconstitute this agent's remix memory into the
+  // MCP instructions payload so a fresh Claude Code session wakes with
+  // prior mesh state already loaded (MMP §4.2 O2 — rejoin-without-replay).
+  try {
+    if (typeof node.buildStartupPrimer === 'function') {
+      const primer = node.buildStartupPrimer();
+      if (primer && primer.count > 0 && typeof server.instructions === 'string') {
+        server.instructions = `${server.instructions}\n\n${primer.text}`;
+      }
+    }
+  } catch (err) {
+    process.stderr.write(`melotune-plugin startup primer skipped: ${err?.message || err}\n`);
+  }
 
   const transport = new StdioServerTransport();
   await server.connect(transport);

@@ -54,15 +54,34 @@ const REQUEST_TIMEOUT_MS = 5000;
  * Returns { ok: false, reason: "..." } if no peer responds within timeout.
  */
 async function requestFromMeloTune(node, focusTag, extraFields = {}) {
-  const peers = node.peers ? node.peers() : [];
-  const melotunePeer = peers.find((p) => PEER_PATTERN.test(p.name || ''));
+  // Peer discovery can race the first user request — the SymNode has
+  // started Bonjour browsing but the MeloTune iOS peer may not yet be
+  // in _peers. Retry briefly before giving up.
+  const getMelotunePeer = () => {
+    const peers = (typeof node.peers === 'function') ? node.peers() : [];
+    return {
+      peers,
+      melotunePeer: peers.find((p) => PEER_PATTERN.test(p.name || '') && !/plugin/i.test(p.name || '')),
+    };
+  };
+  let { peers, melotunePeer } = getMelotunePeer();
   if (!melotunePeer) {
+    // Short warmup — Bonjour typically resolves within ~1.5s on first try.
+    for (let i = 0; i < 10 && !melotunePeer; i++) {
+      await new Promise((r) => setTimeout(r, 300));
+      ({ peers, melotunePeer } = getMelotunePeer());
+    }
+  }
+  if (!melotunePeer) {
+    const seenNames = peers.map((p) => `${p.name} (${p.coupling})`).join(', ') || '(none)';
     return {
       ok: false,
       reason:
-        'MeloTune peer not detected on the mesh. Start MeloTune on your iPhone ' +
-        'and ensure it is on the same LAN or connected to the same relay.',
-      peers: peers.map((p) => p.name),
+        'MeloTune peer not detected on the mesh after 3s discovery. Start MeloTune on your iPhone ' +
+        'and ensure it is on the same LAN or connected to the same relay. ' +
+        `Peers visible to plugin: ${seenNames}. ` +
+        'If MeloTune iOS can see "melotune-plugin-<pid>" but the plugin cannot see it back, ' +
+        'the connection is half-established — kill Claude Code and restart.',
     };
   }
 

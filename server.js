@@ -7,25 +7,29 @@
  * play, skip — over the SYM mesh to MeloTune running on your iPhone.
  *
  * Architecture:
- *   Claude Code → MCP tool call → SymNode emits typed CMB → MeloTune iOS
- *   MeloTune iOS → typed response CMB → SymNode inbound → MCP tool result
+ *   Claude Code → MCP tool call → SymNode MMP message frame → MeloTune iOS
+ *   MeloTune iOS → SymNode MMP message frame → plugin inbound → MCP tool result
  *
- * CMB contract (implemented by MeloTune iOS for this plugin to work):
- *   Requests from plugin:
- *     focus = "melotune:now-playing"    | "melotune:queue"          | "melotune:play"
- *           | "melotune:skip"           | "melotune:favorite"       | "melotune:unfavorite"
- *           | "melotune:artist-info"    | "melotune:history"        | "melotune:search"
- *     intent = short human description of the ask
- *     motivation = session-context (file being edited, vibe tag) if useful
- *     metadata = request parameters as an object (trackId, artistName, query, limit, etc.)
- *   Responses expected (focus = "<same>:response"):
- *     now-playing:   { title, artist, mood, durationSec, positionSec }
- *     queue:         { tracks: [{ title, artist, mood, durationSec }, ...] }
- *     play / skip:   { ok: bool, detail?: string }
- *     favorite/unfavorite: { ok: bool, title, artist, favorite: bool }
- *     artist-info:   { name, bio?, genres: [], topTracks: [], similarArtists: [] }
- *     history:       { tracks: [{ title, artist, playedAt, mood }], topArtists: [], topMoods: [] }
- *     search:        { results: [{ title, artist, mood }] }
+ * Transport: MMP §4.4 message frames (NOT CMBs). MeloTune's SVAF music-agent
+ * profile rejects CMBs with no mood/cognitive signal, so protocol-control
+ * traffic rides message frames which bypass SVAF entirely.
+ *
+ * Wire format (JSON string in message content):
+ *   Request:  { protocol: "melotune-plugin", v: 1, id, focus, metadata?, intent? }
+ *   Response: { protocol: "melotune-plugin", v: 1, id, focus: "<req>:response", payload }
+ *
+ * Focus values: "melotune:now-playing" | "melotune:queue" | "melotune:play"
+ *             | "melotune:skip" | "melotune:favorite" | "melotune:unfavorite"
+ *             | "melotune:artist-info" | "melotune:history" | "melotune:search"
+ *
+ * Response payload shapes:
+ *   now-playing:   { title, artist, mood, durationSec, positionSec }
+ *   queue:         { tracks: [{ title, artist, mood, durationSec }, ...] }
+ *   play / skip:   { ok: bool, detail?: string }
+ *   favorite/unfavorite: { ok: bool, title, artist, favorite: bool }
+ *   artist-info:   { name, bio?, genres: [], topTracks: [], similarArtists: [] }
+ *   history:       { tracks: [{ title, artist, playedAt, mood }], topArtists: [], topMoods: [] }
+ *   search:        { results: [{ title, artist, mood }] }
  *
  * Copyright (c) 2026 SYM.BOT. Apache 2.0 License.
  */
@@ -45,39 +49,46 @@ const NODE_NAME = process.env.MELOTUNE_PLUGIN_NODE_NAME || `melotune-plugin-${pr
 // as MeloTune iOS).
 const DISCOVERY_SERVICE_TYPE = process.env.MELOTUNE_SERVICE_TYPE || '_melotune._tcp';
 const MESH_GROUP = process.env.MELOTUNE_GROUP || 'default';
-const PEER_PATTERN = /^melotune/i; // match any peer whose name starts with "melotune"
 const REQUEST_TIMEOUT_MS = 5000;
 
+// Correlation IDs for request/response pairing over MMP message frames.
+let _requestCounter = 0;
+function nextRequestId() {
+  _requestCounter += 1;
+  return `mt-${process.pid}-${Date.now().toString(36)}-${_requestCounter}`;
+}
+
+function stderrLog(msg) {
+  try { process.stderr.write(`[melotune-plugin] ${msg}\n`); } catch {}
+}
+
 /**
- * Send a typed request CMB to the MeloTune peer on the mesh and resolve
- * with the first response whose focus matches `${focusTag}:response`.
- * Returns { ok: false, reason: "..." } if no peer responds within timeout.
+ * Send a typed request to MeloTune iOS via an MMP message frame (§4.4)
+ * and resolve with the first matching response message. MMP message
+ * frames bypass SVAF — CMBs with only a `focus` field and no mood are
+ * rejected by MeloTune's music-agent SVAF profile before .memoryReceived
+ * fires, which is why the earlier CMB-based protocol silently timed out.
+ *
+ * Envelope on the wire (JSON string in message content):
+ *   { protocol: "melotune-plugin", v: 1, id, focus, metadata?, intent? }
+ *
+ * Response envelope:
+ *   { protocol: "melotune-plugin", v: 1, id, focus: "...:response", payload }
  */
 async function requestFromMeloTune(node, focusTag, extraFields = {}) {
-  // Peer discovery can race the first user request — the SymNode has
-  // started Bonjour browsing but the MeloTune iOS peer may not yet be
-  // in _peers. Retry briefly before giving up.
-  //
-  // Since we already filter at the Bonjour layer via
-  // discoveryServiceType = _melotune._tcp, every peer in node.peers()
-  // is by definition a MeloTune-family peer — the user's phone might
-  // publish with a custom display name (e.g., "Hongwei") rather than
-  // the default "melotune", so we match by "not-self" instead of a
-  // name prefix.
   const getMelotunePeer = () => {
     const peers = (typeof node.peers === 'function') ? node.peers() : [];
     const melotunePeer = peers.find((p) => {
       const n = p.name || '';
       if (!n) return false;
-      if (n === NODE_NAME) return false;          // us
-      if (/^melotune-plugin/i.test(n)) return false; // another plugin instance
-      return true; // anything else on _melotune._tcp is a MeloTune iOS peer
+      if (n === NODE_NAME) return false;
+      if (/^melotune-plugin/i.test(n)) return false;
+      return true;
     });
     return { peers, melotunePeer };
   };
   let { peers, melotunePeer } = getMelotunePeer();
   if (!melotunePeer) {
-    // Short warmup — Bonjour typically resolves within ~1.5s on first try.
     for (let i = 0; i < 10 && !melotunePeer; i++) {
       await new Promise((r) => setTimeout(r, 300));
       ({ peers, melotunePeer } = getMelotunePeer());
@@ -96,48 +107,55 @@ async function requestFromMeloTune(node, focusTag, extraFields = {}) {
     };
   }
 
+  const requestId = nextRequestId();
+  const envelope = {
+    protocol: 'melotune-plugin',
+    v: 1,
+    id: requestId,
+    focus: focusTag,
+    ...extraFields,
+  };
+
   return new Promise((resolve) => {
     let settled = false;
-    // Incoming CMBs fire 'cmb-accepted' on SymNode (after SVAF accepts),
-    // NOT 'cmb'. Payload shape from MemoryStore.receiveFromPeer:
-    //   { key, cmb: { fields: { focus: { text: "..." }, commitment: { text: "..." }, ... } }, ... }
-    // Fields are objects with a `.text` property (plus optional valence/arousal on mood).
-    const readFieldText = (field) => {
-      if (!field) return '';
-      if (typeof field === 'string') return field;
-      if (typeof field.text === 'string') return field.text;
-      return '';
-    };
-    const onCmbAccepted = (stored) => {
-      if (settled) return;
-      const fields = stored?.cmb?.fields || {};
-      const focus = readFieldText(fields.focus);
-      if (focus === `${focusTag}:response`) {
-        settled = true;
-        cleanup();
-        resolve({ ok: true, cmb: stored.cmb, _plainFields: fields });
-      }
+    // @sym-bot/sym emits 'message' with positional args: (fromName, content, rawFrame).
+    const onMessage = (fromName, content) => {
+      if (settled || typeof content !== 'string') return;
+      if (!content.startsWith('{')) return;
+      let msg;
+      try { msg = JSON.parse(content); } catch { return; }
+      if (!msg || msg.protocol !== 'melotune-plugin') return;
+      if (msg.id !== requestId) return;
+      if (msg.focus !== `${focusTag}:response`) return;
+      settled = true;
+      cleanup();
+      resolve({ ok: true, from: fromName, payload: msg.payload || {} });
     };
     const cleanup = () => {
-      if (typeof node.off === 'function') node.off('cmb-accepted', onCmbAccepted);
-      else if (typeof node.removeListener === 'function') node.removeListener('cmb-accepted', onCmbAccepted);
+      if (typeof node.off === 'function') node.off('message', onMessage);
+      else if (typeof node.removeListener === 'function') node.removeListener('message', onMessage);
     };
-    if (typeof node.on === 'function') node.on('cmb-accepted', onCmbAccepted);
+    if (typeof node.on === 'function') node.on('message', onMessage);
 
-    // Broadcast the request (no `to:`). Broadcast is simpler and sidesteps
-    // a subtle peerId-lookup race in targeted send. The iOS handler filters
-    // on `focus.hasPrefix("melotune:")` so only MeloTune peers act on it.
-    const fields = { focus: focusTag, ...extraFields };
-    const stderrLog = (msg) => { try { process.stderr.write(`[melotune-plugin] ${msg}\n`); } catch {} };
     try {
-      if (typeof node.remember !== 'function') {
+      if (typeof node.send !== 'function') {
         settled = true;
         cleanup();
-        return resolve({ ok: false, reason: 'SymNode.remember unavailable' });
+        return resolve({ ok: false, reason: 'SymNode.send unavailable' });
       }
-      stderrLog(`sending request focus=${focusTag} target=${melotunePeer.name} peerId=${melotunePeer.peerId?.slice(0, 8) || 'unknown'} peerCount=${peers.length}`);
-      const stored = node.remember(fields);
-      stderrLog(`remember returned: ${stored ? 'stored-entry:' + (stored.key || 'no-key').slice(0, 8) : 'null'}`);
+      const payload = JSON.stringify(envelope);
+      const peerIdShort = melotunePeer.peerId ? melotunePeer.peerId.slice(0, 8) : 'unknown';
+      stderrLog(`send focus=${focusTag} id=${requestId} target=${melotunePeer.name} peerId=${peerIdShort}`);
+      const delivered = node.send(payload, { to: melotunePeer.peerId });
+      stderrLog(`send delivered=${delivered}`);
+      if (!delivered) {
+        settled = true;
+        cleanup();
+        return resolve({
+          ok: false,
+          reason: `MeloTune peer "${melotunePeer.name}" is listed but transport is not ready. Try again in a moment.`,
+        });
+      }
     } catch (err) {
       stderrLog(`send threw: ${err.message}`);
       settled = true;
@@ -156,29 +174,6 @@ async function requestFromMeloTune(node, focusTag, extraFields = {}) {
       }
     }, REQUEST_TIMEOUT_MS);
   });
-}
-
-function parseResponsePayload(cmb) {
-  // iOS handler puts the JSON payload in the `commitment` CAT7 field
-  // (see SymMeshService.swift handleMeloTunePluginRequest). Fields on
-  // the wire decode to `{ text: "..." }` objects in the JS SDK.
-  const fields = cmb?.fields || {};
-  const readFieldText = (field) => {
-    if (!field) return '';
-    if (typeof field === 'string') return field;
-    if (typeof field.text === 'string') return field.text;
-    return '';
-  };
-  const raw =
-    readFieldText(fields.commitment) ||
-    readFieldText(fields.content) ||
-    readFieldText(fields.metadata);
-  if (!raw) return {};
-  try {
-    return JSON.parse(raw);
-  } catch {
-    return { raw };
-  }
 }
 
 function formatNowPlaying(p) {
@@ -221,7 +216,7 @@ async function main() {
   if (typeof node.start === 'function') await node.start();
 
   const server = new Server(
-    { name: 'melotune-plugin', version: '0.1.0' },
+    { name: 'melotune-plugin', version: '0.1.5' },
     { capabilities: { tools: {} } }
   );
 
@@ -318,21 +313,21 @@ async function main() {
           intent: 'fetch current track for display in Claude Code console',
         });
         if (!r.ok) return { content: [{ type: 'text', text: r.reason }] };
-        return { content: [{ type: 'text', text: formatNowPlaying(parseResponsePayload(r.cmb)) }] };
+        return { content: [{ type: 'text', text: formatNowPlaying(r.payload) }] };
       }
       case 'melotune_queue': {
         const r = await requestFromMeloTune(node, 'melotune:queue', {
           intent: 'fetch upcoming queue for display in Claude Code console',
         });
         if (!r.ok) return { content: [{ type: 'text', text: r.reason }] };
-        return { content: [{ type: 'text', text: formatQueue(parseResponsePayload(r.cmb)) }] };
+        return { content: [{ type: 'text', text: formatQueue(r.payload) }] };
       }
       case 'melotune_play': {
         const r = await requestFromMeloTune(node, 'melotune:play', {
           intent: 'begin or resume playback',
         });
         if (!r.ok) return { content: [{ type: 'text', text: r.reason }] };
-        const p = parseResponsePayload(r.cmb);
+        const p = r.payload;
         return { content: [{ type: 'text', text: p.ok ? '▶ Playing.' : `Play failed: ${p.detail || 'unknown'}` }] };
       }
       case 'melotune_skip': {
@@ -340,7 +335,7 @@ async function main() {
           intent: 'skip to next track',
         });
         if (!r.ok) return { content: [{ type: 'text', text: r.reason }] };
-        const p = parseResponsePayload(r.cmb);
+        const p = r.payload;
         return { content: [{ type: 'text', text: p.ok ? '⏭  Skipped to next track.' : `Skip failed: ${p.detail || 'unknown'}` }] };
       }
       case 'melotune_favorite': {
@@ -349,7 +344,7 @@ async function main() {
           metadata: args.trackId ? { trackId: args.trackId } : undefined,
         });
         if (!r.ok) return { content: [{ type: 'text', text: r.reason }] };
-        const p = parseResponsePayload(r.cmb);
+        const p = r.payload;
         return {
           content: [
             {
@@ -367,7 +362,7 @@ async function main() {
           metadata: args.trackId ? { trackId: args.trackId } : undefined,
         });
         if (!r.ok) return { content: [{ type: 'text', text: r.reason }] };
-        const p = parseResponsePayload(r.cmb);
+        const p = r.payload;
         return {
           content: [
             {
@@ -385,7 +380,7 @@ async function main() {
           metadata: args.artistName ? { artistName: args.artistName } : undefined,
         });
         if (!r.ok) return { content: [{ type: 'text', text: r.reason }] };
-        const p = parseResponsePayload(r.cmb);
+        const p = r.payload;
         if (!p.name) return { content: [{ type: 'text', text: 'No artist info available.' }] };
         const lines = [`🎤  ${p.name}`];
         if (p.bio) lines.push('', p.bio);
@@ -405,7 +400,7 @@ async function main() {
           metadata: { limit: args.limit ?? 20 },
         });
         if (!r.ok) return { content: [{ type: 'text', text: r.reason }] };
-        const p = parseResponsePayload(r.cmb);
+        const p = r.payload;
         const lines = [];
         if (Array.isArray(p.topArtists) && p.topArtists.length) {
           lines.push('Top artists:');
@@ -433,7 +428,7 @@ async function main() {
           metadata: { query },
         });
         if (!r.ok) return { content: [{ type: 'text', text: r.reason }] };
-        const p = parseResponsePayload(r.cmb);
+        const p = r.payload;
         const results = Array.isArray(p.results) ? p.results : [];
         if (!results.length) return { content: [{ type: 'text', text: `No results for "${query}".` }] };
         const lines = [`Results for "${query}":`];
